@@ -1,5 +1,5 @@
 # The City
-A low-res, 256 color ray-traced scene with FPS controls.
+A low-res, 256 color ray-traced scene with FPS controls. Powered by [ncollide](https://github.com/sebcrozet/ncollide) and [SDL2](https://github.com/Rust-SDL2/rust-sdl2).
 
 ![Preview Image](./screenshot.png)
 
