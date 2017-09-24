@@ -1,0 +1,14 @@
+[package]
+name = "thecity"
+version = "0.1.0"
+authors = ["Daniel Hauser <daniel.hauser@liwest.at>"]
+
+[dependencies]
+sdl2 = "0.30.0"
+nalgebra = "0.13.0"
+rayon = "0.8.2"
+wavefront_obj = "5.1.0"
+
+[dependencies.ncollide]
+git = "https://github.com/sebcrozet/ncollide.git"
+rev = "fe7a820ead7123dc114d97c968f6086e9741e82a"
