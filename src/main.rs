@@ -1,10 +1,8 @@
 extern crate nalgebra;
-extern crate ncollide;
+extern crate ncollide3d as ncollide;
 extern crate rayon;
 extern crate sdl2;
 extern crate wavefront_obj as obj;
-
-use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -12,11 +10,11 @@ use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Scancode};
 use sdl2::pixels::PixelFormatEnum;
 
-use nalgebra::{Isometry3, Point, Point3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
 
+use ncollide::query::Ray;
+use ncollide::shape::{Ball, ShapeHandle, TriMesh, Triangle};
 use ncollide::world::{CollisionGroups, CollisionWorld, GeometricQueryType};
-use ncollide::shape::{Ball, ShapeHandle, TriMesh3, Triangle};
-use ncollide::query::Ray3;
 
 use obj::obj::Primitive;
 
@@ -60,9 +58,8 @@ fn main() {
 
     // Init world
     let groups = CollisionGroups::new();
-    let query = GeometricQueryType::Contacts(0.0);
-    let mut world =
-        CollisionWorld::<Point3<f32>, Isometry3<f32>, WorldObjectData>::new(0.02, false);
+    let query = GeometricQueryType::Contacts(0.001, 0.09);
+    let mut world = CollisionWorld::<f32, WorldObjectData>::new(0.02);
     let ball_shape = ShapeHandle::new(Ball::new(0.5));
     let triangle_shape = ShapeHandle::new(Triangle::new(
         Point3::new(-0.5, -0.5, 0.0),
@@ -70,16 +67,14 @@ fn main() {
         Point3::new(0.5, -0.5, 0.0),
     ));
 
-    world.deferred_add(
-        0,
+    world.add(
         Isometry3::from_parts(Translation3::new(1.0, 2.0, 2.0), UnitQuaternion::identity()),
         ball_shape.clone(),
         groups,
         query,
         WorldObjectData::new(0x11),
     );
-    world.deferred_add(
-        1,
+    world.add(
         Isometry3::from_parts(
             Translation3::new(-1.0, 2.0, 2.0),
             UnitQuaternion::identity(),
@@ -90,8 +85,7 @@ fn main() {
         WorldObjectData::new(0x22),
     );
 
-    world.deferred_add(
-        2,
+    let obj3 = world.add(
         Isometry3::from_parts(Translation3::new(0.0, 4.0, 2.0), UnitQuaternion::identity()),
         triangle_shape.clone(),
         groups,
@@ -101,49 +95,45 @@ fn main() {
 
     if let Some(contents) = read_file("The City/The City.obj") {
         match obj::obj::parse(contents) {
-            Ok(obj_set) => for (i, obj) in obj_set.objects.iter().enumerate() {
-                let vertices = obj.vertices
-                    .iter()
-                    .map(|v| Point3::new(v.x as f32, v.y as f32, v.z as f32))
-                    .collect();
-                let normals = obj.normals
-                    .iter()
-                    .map(|v| Vector3::new(v.x as f32, v.y as f32, v.z as f32))
-                    .collect();
-                let indices = obj.geometry
-                    .iter()
-                    .flat_map(|g| {
-                        g.shapes
-                            .iter()
-                            .map(|s| if let Primitive::Triangle(v1, v2, v3) = s.primitive {
-                                Some(Point::<usize, nalgebra::U3>::new(v1.0, v2.0, v3.0))
-                            } else {
-                                None
-                            })
-                            .filter(Option::is_some)
-                            .map(Option::unwrap)
-                    })
-                    .collect();
+            Ok(obj_set) => {
+                for obj in obj_set.objects.iter() {
+                    let vertices: Vec<_> = obj
+                        .vertices
+                        .iter()
+                        .map(|v| Point3::new(v.x as f32, v.y as f32, v.z as f32))
+                        .collect();
+                    let indices: Vec<_> = obj
+                        .geometry
+                        .iter()
+                        .flat_map(|g| {
+                            g.shapes
+                                .iter()
+                                .map(|s| {
+                                    if let Primitive::Triangle(v1, v2, v3) = s.primitive {
+                                        Some(Point3::new(v1.0, v2.0, v3.0))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .filter(Option::is_some)
+                                .map(Option::unwrap)
+                        })
+                        .collect();
 
-                let shape = TriMesh3::new(
-                    Arc::new(vertices),
-                    Arc::new(indices),
-                    None,
-                    Some(Arc::new(normals)),
-                );
-                let iso = Isometry3::from_parts(
-                    Translation3::new(0.0, -1.0, 10.0),
-                    UnitQuaternion::identity(),
-                );
-                world.deferred_add(
-                    3 + i,
-                    iso,
-                    ShapeHandle::new(shape),
-                    groups,
-                    query,
-                    WorldObjectData::new(0xDD),
-                );
-            },
+                    let shape = TriMesh::new(vertices, indices, None);
+                    let iso = Isometry3::from_parts(
+                        Translation3::new(0.0, -1.0, 10.0),
+                        UnitQuaternion::identity(),
+                    );
+                    world.add(
+                        iso,
+                        ShapeHandle::new(shape),
+                        groups,
+                        query,
+                        WorldObjectData::new(0xDD),
+                    );
+                }
+            }
             Err(e) => println!("Failed to parse map: '{:?}'", e),
         }
     } else {
@@ -165,8 +155,8 @@ fn main() {
 
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit { .. } |
-                Event::KeyDown {
+                Event::Quit { .. }
+                | Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'main,
@@ -213,8 +203,8 @@ fn main() {
         light_pos.x = elapsed.cos() * 4.0;
         light_pos.z = elapsed.sin() * 4.0;
 
-        world.deferred_set_position(
-            2,
+        world.set_position(
+            obj3,
             Isometry3::from_parts(
                 Translation3::new(0.0, 0.0, 2.0),
                 UnitQuaternion::from_euler_angles(elapsed, elapsed / 2.0, 0.0),
@@ -249,7 +239,7 @@ fn main() {
 
             let dir =
                 UnitQuaternion::from_euler_angles(camera_rot.x, camera_rot.y, camera_rot.z) * dir;
-            let ray = Ray3::new(camera_pos, dir);
+            let ray = Ray::new(camera_pos, dir);
 
             // Find closes object
             let mut interferences: Vec<_> = world.interferences_with_ray(&ray, &groups).collect();
@@ -264,7 +254,7 @@ fn main() {
                 let brightness = intersec.normal.dot(&dir_to_light).max(0.0);
 
                 // Convert color to floats
-                let color = obj.data.color;
+                let color = obj.data().color;
                 let (r, g, b) = (
                     (color & 0b11100000) >> 5,
                     (color & 0b00011100) >> 2,
@@ -274,7 +264,7 @@ fn main() {
 
                 // Calculate whether in shadow
                 let in_shadow = {
-                    let light_ray = Ray3::new(hit_pos + dir_to_light * 0.001, dir_to_light);
+                    let light_ray = Ray::new(hit_pos + dir_to_light * 0.001, dir_to_light);
                     world
                         .interferences_with_ray(&light_ray, &groups)
                         .next()
@@ -300,10 +290,12 @@ fn main() {
                 color
             } else {
                 // Trippy background
-                let red = ((x as f32 + elapsed * 20.0 + camera_rot.y * video_width as f32) /
-                    video_width as f32 * 8.0) as u8;
-                let green = ((y as f32 + elapsed * 14.0 + camera_rot.x * video_height as f32) /
-                    video_height as f32 * 8.0) as u8;
+                let red = ((x as f32 + elapsed * 20.0 + camera_rot.y * video_width as f32)
+                    / video_width as f32
+                    * 8.0) as u8;
+                let green = ((y as f32 + elapsed * 14.0 + camera_rot.x * video_height as f32)
+                    / video_height as f32
+                    * 8.0) as u8;
                 let pix = ((red & 0b00000111) << 5) | ((green & 0b00000111) << 2);
                 pix
             };
