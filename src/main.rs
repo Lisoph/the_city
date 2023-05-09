@@ -1,4 +1,3 @@
-extern crate nalgebra;
 extern crate ncollide3d as ncollide;
 extern crate rayon;
 extern crate sdl2;
@@ -8,13 +7,15 @@ use rayon::prelude::*;
 
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Scancode};
-use sdl2::pixels::PixelFormatEnum;
+use sdl2::pixels::{PixelFormatEnum};
 
-use nalgebra::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use ncollide::na::{Isometry3, Point3, Translation3, UnitQuaternion, Vector3};
+use ncollide::pipeline::FirstInterferenceWithRay;
 
 use ncollide::query::Ray;
 use ncollide::shape::{Ball, ShapeHandle, TriMesh, Triangle};
-use ncollide::world::{CollisionGroups, CollisionWorld, GeometricQueryType};
+use ncollide::world::{CollisionWorld};
+use ncollide::pipeline::object::{GeometricQueryType, CollisionGroups};
 
 use obj::obj::Primitive;
 
@@ -29,6 +30,8 @@ impl WorldObjectData {
 }
 
 fn main() {
+    println!("Using {} threads.\n", rayon::current_num_threads());
+
     let video_scale = 4;
     let (video_width, video_height) = (1280 / video_scale, 720 / video_scale);
 
@@ -85,7 +88,7 @@ fn main() {
         WorldObjectData::new(0x22),
     );
 
-    let obj3 = world.add(
+    let (obj3, ..) = world.add(
         Isometry3::from_parts(Translation3::new(0.0, 4.0, 2.0), UnitQuaternion::identity()),
         triangle_shape.clone(),
         groups,
@@ -203,34 +206,28 @@ fn main() {
         light_pos.x = elapsed.cos() * 4.0;
         light_pos.z = elapsed.sin() * 4.0;
 
-        world.set_position(
-            obj3,
-            Isometry3::from_parts(
+        if let Some(obj3) = world.get_mut(obj3) {
+            obj3.set_position(Isometry3::from_parts(
                 Translation3::new(0.0, 0.0, 2.0),
                 UnitQuaternion::from_euler_angles(elapsed, elapsed / 2.0, 0.0),
-            ),
-        );
+            ));
+        }
 
         world.update();
 
         // Draw frame
         pixels.par_iter_mut().enumerate().for_each(|(i, pix)| {
-            let (x, y) = (i % video_width as usize, i / video_height as usize);
+            let (x, y) = (i as u32 % video_width, i as u32 / video_height);
 
             // Calculate ray
             let dir = {
                 // min: half_missing
                 // max: video_width - half_missing
                 // map 0..video_width -> half_missing..(video_width - half_missing)
-                let (dirx, diry) = if video_width >= video_height {
+                let (dirx, diry) = {
                     let dirx = x as f32 / video_width as f32;
                     let half_missing = (video_width - video_height) as f32 / 2.0;
                     let diry = (y as f32 + half_missing) / video_width as f32;
-                    (dirx, diry)
-                } else {
-                    let diry = y as f32 / video_height as f32;
-                    let half_missing = (video_height - video_width) as f32 / 2.0;
-                    let dirx = (x as f32 + half_missing) / video_height as f32;
                     (dirx, diry)
                 };
                 let (dirx, diry) = (dirx * 2.0 - 1.0, diry * 2.0 - 1.0);
@@ -242,12 +239,9 @@ fn main() {
             let ray = Ray::new(camera_pos, dir);
 
             // Find closes object
-            let mut interferences: Vec<_> = world.interferences_with_ray(&ray, &groups).collect();
-            interferences.sort_unstable_by(|&(_, ref a), &(_, ref b)| {
-                ((a.toi * 1000.0) as i32).cmp(&((b.toi * 1000.0) as i32))
-            });
+            let inter = world.first_interference_with_ray(&ray, 100.0, &groups);
 
-            *pix = if let Some(&(ref obj, ref intersec)) = interferences.iter().next() {
+            *pix = if let Some(FirstInterferenceWithRay { co: obj, inter: intersec, .. }) = inter {
                 // Calculate illumination
                 let hit_pos = camera_pos + dir * intersec.toi;
                 let dir_to_light = (light_pos - hit_pos).normalize();
@@ -263,23 +257,22 @@ fn main() {
                 let (r, g, b) = (r as f32 / 8.0, g as f32 / 8.0, b as f32 / 3.0);
 
                 // Calculate whether in shadow
-                let in_shadow = {
+                let shadow_coef = {
                     let light_ray = Ray::new(hit_pos + dir_to_light * 0.001, dir_to_light);
-                    world
-                        .interferences_with_ray(&light_ray, &groups)
-                        .next()
-                        .is_some()
+                    match world
+                        .first_interference_with_ray(&light_ray, 100.0, &groups)
+                        .is_some() {
+                        true => 0f32,
+                        false => 1f32,
+                    }
                 };
+
                 // Apply illumination / shadow
-                let (r, g, b) = if in_shadow {
-                    (0.0, 0.0, 0.0)
-                } else {
-                    (
-                        (r * brightness).min(1.0),
-                        (g * brightness).min(1.0),
-                        (b * brightness).min(1.0),
-                    )
-                };
+                let (r, g, b) = (
+                    (r * brightness * shadow_coef).min(1.0),
+                    (g * brightness * shadow_coef).min(1.0),
+                    (b * brightness * shadow_coef).min(1.0),
+                );
 
                 // Gamma correction
                 let (r, g, b) = (r.powf(1.0 / 2.2), g.powf(1.0 / 2.2), b.powf(1.0 / 2.2));
